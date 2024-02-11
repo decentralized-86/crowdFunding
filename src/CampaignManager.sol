@@ -1,7 +1,8 @@
 //SPDX-License-Identifier : MIT
-pragma solidity 0.8.19;
+pragma solidity 0.8.20;
 
-import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+// import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "foundry-chainlink-toolkit/src/interfaces/feeds/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./ERC20CampaignTemplate.sol";
 
@@ -39,9 +40,10 @@ contract CampaignManager {
         string currency;
     }
 
-    AggregatorV3Interface internal constant priceFeedMATIC = "0xd0D5e3DB44DE05E9F294BB0a3bEEaF030DE24Ada";
-    AggregatorV3Interface internal constant priceFeedUSDC = "0x572dDec9087154dC5dfBB1546Bb62713147e0Ab0";
-    AggregatorV3Interface internal constant priceFeedDAI = "0x0FCAa9c899EC5A91eBc3D5Dd869De833b06fB046";
+    AggregatorV3Interface internal constant priceFeedMATIC = AggregatorV3Interface(0xd0D5e3DB44DE05E9F294BB0a3bEEaF030DE24Ada);
+AggregatorV3Interface internal constant priceFeedUSDC = AggregatorV3Interface(0x572dDec9087154dC5dfBB1546Bb62713147e0Ab0);
+AggregatorV3Interface internal constant priceFeedDAI = AggregatorV3Interface(0x0FCAa9c899EC5A91eBc3D5Dd869De833b06fB046);
+
     mapping(uint256 => mapping(address => Contribution)) private contributions;
     address private immutable owner;
     mapping(uint256 => Campaign) public campaigns;
@@ -69,33 +71,40 @@ contract CampaignManager {
         owner = msg.sender;
     }
 
-    function createCampaign(uint256 _fundingGoal, uint256 _duration, string memory _description, string memory _name)
-        external
-    {
-        if (_fundingGoal <= 0 || _duration <= 0) revert mustBeValid();
-        if(bytes(_description).length == 0 || bytes(_name).length == 0) revert mustBeValid();
+    function createCampaign(
+    uint256 _fundingGoal, 
+    uint256 _duration, 
+    string memory _description, 
+    string memory _name
+) external {
+    if (_fundingGoal <= 0 || _duration <= 0) revert mustBeValid();
+    if(bytes(_description).length == 0 || bytes(_name).length == 0) revert mustBeValid();
 
-        uint256 newCampaignID = ++campaignCount;
-        require(campaigns[newCampaignID].state == CampaignState.Uninitialized, "Campaign already exists");
+    uint256 newCampaignID = ++campaignCount;
+    require(campaigns[newCampaignID].state == CampaignState.Uninitialized, "Campaign already exists");
 
-        CampaignToken token = new CampaignToken(_name, _name);
+    CampaignToken token = new CampaignToken(_name, _name); // Ensure this line is correct and CampaignToken can be initialized like this
 
-        Campaign memory newCampaign = Campaign({
-            campaignID: newCampaignID,
-            campaignCreator: msg.sender,
-            fundingGoal: _fundingGoal,
-            investorsVoteCount: 0,
-            totalInvestors: 0,
-            currentBalance: 0,
-            finishAt: block.timestamp + _duration,
-            state: CampaignState.Pending,
-            description: _description,
-            name: _name,
-            erc20Address: address(token)
-        });
-        campaigns[newCampaignID] = newCampaign;
-        emit CampaignCreated(newCampaignID, msg.sender, _fundingGoal, _duration, _description);
-    }
+    Campaign memory newCampaign = Campaign({
+        campaignID: newCampaignID,
+        campaignCreator: msg.sender,
+        fundingGoal: _fundingGoal,
+        investorsVoteCount: 0,
+        totalInvestors: 0,
+        currentBalance: 0,
+        finishAt: block.timestamp + _duration,
+        hasApproved: false,
+        hasRequestedForApproval: false,
+        state: CampaignState.Pending,
+        description: _description,
+        name: _name,
+        erc20Address: address(token)
+    });
+
+    campaigns[newCampaignID] = newCampaign;
+    emit CampaignCreated(newCampaignID, msg.sender, _fundingGoal, _duration, _description);
+}
+
 
     function activateProject(uint256 _campaignID) external onlyOwner {
         Campaign storage campaign = campaigns[_campaignID];
@@ -149,7 +158,7 @@ contract CampaignManager {
         require(contributions[_campaignID][msg.sender].amount == 0, "Investor can only contribute once");
         uint256 dollarValue;
         if (keccak256(abi.encodePacked(_tokenSymbol)) == keccak256(abi.encodePacked(""))) {
-            uint256 maticPriceInUSD = getLatestPrice(priceFeedMATIC);
+            uint maticPriceInUSD = getLatestPrice(address(priceFeedMATIC));
             dollarValue = (msg.value * maticPriceInUSD) / 1e8;
         } else {
             address stablecoinAddress = getStablecoinAddress(_tokenSymbol);
@@ -191,33 +200,39 @@ contract CampaignManager {
         campaign.hasApproved = true;
     }
 
-    function withdrawFunds(uint256 _campaignID) external payable {
-        Campaign storage campaign = campaigns[_campaignID];
-        require(campaign.state == CampaignState.Active, "Campaign is not active");
-        require(block.timestamp > campaign.finishAt, "Campaign funding period has not ended");
-        require(campaign.campaignCreator == msg.sender, "Not the campaign creator");
-        require(campaign.investorsVoteCount > (campaign.totalInvestors / 2), "Must have 50% investor's approval");
-        require(campaign.hasApproved, "Not approved by owner");
+    function withdrawFunds(uint256 _campaignID) external {
+    Campaign storage campaign = campaigns[_campaignID];
+    require(campaign.state == CampaignState.Active, "Campaign is not active");
+    require(block.timestamp > campaign.finishAt, "Campaign funding period has not ended");
+    require(campaign.campaignCreator == msg.sender, "Not the campaign creator");
+    require(campaign.investorsVoteCount > (campaign.totalInvestors / 2), "Must have 50% investor's approval");
+    require(campaign.hasApproved, "Not approved by owner");
 
-        uint totalFunds = campaign.currentBalance;
+    uint totalFunds = campaign.currentBalance;
+    uint fees = (totalFunds * 10) / 100; // Calculate a 10% fee
+    uint remainFunds = totalFunds - fees; // Remaining funds after fees
 
-        uint fees = (totalFunds * 10) / 100;
+    // Transfer fees to the owner
+    (bool feeSent,) = payable(owner).call{value: fees}("");
+    require(feeSent, "Fee transfer failed");
 
-        uint remainFunds = totalFunds - fees;
-
-        (bool sent,) = payable(owner).call{value: fees}("");
+    // Check the currency used in the contribution to decide how to refund
+    Contribution storage contribution = contributions[_campaignID][msg.sender];
+    if (keccak256(abi.encodePacked(contribution.currency)) == keccak256(abi.encodePacked("ETH"))) {
+        // If the currency is ETH, send the remaining funds directly
+        (bool sent,) = msg.sender.call{value: remainFunds}("");
         require(sent, "Refund transfer failed");
-
-        if (keccak256(abi.encodePacked(contribution.currency)) == keccak256(abi.encodePacked(""))) {
-            (bool sent,) = msg.sender.call{value: remainFunds}("");
-            require(sent, "Refund transfer failed");
-        } else {
-            IERC20 token = IERC20(getStablecoinAddress(contribution.currency));
-            uint price = getLatestPrice(priceFeedUSDC);
-            require(token.transfer(msg.sender, remainFunds * price), "Refund transfer failed");
-        }
-
+    } else {
+        // For ERC20 tokens, convert the remaining funds back to the token and send
+        IERC20 token = IERC20(getStablecoinAddress(contribution.currency));
+        // Assuming 1 USD = 1 Token for simplicity, adjust accordingly based on your token's value
+        require(token.transfer(msg.sender, remainFunds), "Token transfer failed");
     }
+
+    // Adjust the campaign's current balance
+    campaign.currentBalance -= totalFunds;
+}
+
 
     function withdrawRefund(uint256 _campaignID) external {
         Campaign storage campaign = campaigns[_campaignID];
@@ -235,20 +250,20 @@ contract CampaignManager {
             require(sent, "Refund transfer failed");
         } else {
             IERC20 token = IERC20(getStablecoinAddress(contribution.currency));
-            uint price = getLatestPrice(priceFeedUSDC);
+            uint price = getLatestPrice(address(priceFeedUSDC));
             require(token.transfer(msg.sender, refundAmount * price), "Refund transfer failed");
         }
         delete contributions[_campaignID][msg.sender];
         emit RefundProcessed(_campaignID, msg.sender, refundAmount);
     }
 
-    function getLatestPrice(address priceFeedAddress) public view returns (uint256) {
+    function getLatestPrice(address priceFeedAddress) internal view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(priceFeedAddress);
         (, int256 price,,,) = priceFeed.latestRoundData();
         return uint256(price);
     }
 
-    function getStablecoinAddress(string memory _tokenSymbol) public view returns (address) {
+    function getStablecoinAddress(string memory _tokenSymbol) internal pure returns (address) {
         if (keccak256(abi.encodePacked(_tokenSymbol)) == keccak256(abi.encodePacked("USDC"))) {
             return address(priceFeedUSDC);
         } else if (keccak256(abi.encodePacked(_tokenSymbol)) == keccak256(abi.encodePacked("DAI"))) {
